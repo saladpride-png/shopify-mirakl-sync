@@ -131,22 +131,24 @@ class MiraklClient {
     try {
       const formData = new FormData();
       formData.append('file', Buffer.from(csvContent), {
-        filename: 'products.csv',
+        filename: 'offers.csv',
         contentType: 'text/csv'
       });
       
-      const response = await axios.post(`${this.baseUrl}/api/products/imports`, formData, {
+      // Use OFFERS API endpoint (not products)
+      const response = await axios.post(`${this.baseUrl}/api/offers/imports`, formData, {
         headers: {
           'Authorization': this.headers.Authorization,
           ...formData.getHeaders()
         },
         params: {
-          shop: this.shopId
+          shop: this.shopId,
+          import_mode: 'NORMAL'
         }
       });
       return response.data;
     } catch (error) {
-      console.error('❌ Error importing products to Mirakl:', error.response?.data || error.message);
+      console.error('❌ Error importing offers to Mirakl:', error.response?.data || error.message);
       throw error;
     }
   }
@@ -242,10 +244,10 @@ class SyncManager {
   }
 
   // ============================================
-  // PRODUCT SYNC: Shopify → Mirakl
+  // PRODUCT/OFFER SYNC: Shopify → Mirakl
   // ============================================
   async syncProducts() {
-    console.log('\n🔄 Starting product sync (Shopify → Mirakl)...');
+    console.log('\n🔄 Starting offer sync (Shopify → Mirakl)...');
     try {
       const products = await this.shopify.getProducts();
       console.log(`📦 Found ${products.length} products in Shopify`);
@@ -255,18 +257,20 @@ class SyncManager {
         return { success: true, count: 0 };
       }
 
-      // Convert Shopify products to Mirakl CSV format
-      const csvLines = ['sku;title;description;price;category;brand'];
+      // Convert Shopify products to Mirakl OFFER CSV format
+      const csvLines = ['sku;product-id;product-id-type;price;quantity;state;description'];
       
       for (const product of products) {
         for (const variant of product.variants) {
+          const sku = variant.sku || `SHOPIFY-${variant.id}`;
           const line = [
-            variant.sku || variant.id,
-            `"${product.title}"`,
-            `"${this.cleanDescription(product.body_html)}"`,
-            variant.price,
-            'default-category',
-            product.vendor || 'SunSeed'
+            sku,                                          // sku: your offer SKU
+            sku,                                          // product-id: link to product
+            'SHOP_SKU',                                   // product-id-type
+            variant.price,                                // price
+            variant.inventory_quantity || 0,              // quantity
+            '11',                                         // state: 11 = new
+            `"${this.cleanDescription(product.body_html)}"` // description
           ].join(';');
           csvLines.push(line);
         }
@@ -275,14 +279,14 @@ class SyncManager {
       const csvContent = csvLines.join('\n');
       const result = await this.mirakl.importProducts(csvContent);
       
-      console.log(`✅ Products imported to Mirakl successfully!`);
+      console.log(`✅ Offers imported to Mirakl successfully!`);
       console.log(`   Import ID: ${result.import_id}`);
       this.syncState.lastProductSync = new Date().toISOString();
       this.saveSyncState();
       
       return result;
     } catch (error) {
-      console.error('❌ Product sync failed:', error.message);
+      console.error('❌ Offer sync failed:', error.message);
       return { success: false, error: error.message };
     }
   }
