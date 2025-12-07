@@ -258,11 +258,12 @@ class SyncManager {
       }
 
       // Convert Shopify products to Mirakl OFFER CSV format
-      const csvLines = ['sku;product-id;product-id-type;price;quantity;state;description'];
+      const csvLines = ['sku;product-id;product-id-type;price;quantity;state;description;category'];
       
       for (const product of products) {
         for (const variant of product.variants) {
           const sku = variant.sku || `SHOPIFY-${variant.id}`;
+          const category = this.mapProductCategory(product);
           const line = [
             sku,                                          // sku: your offer SKU
             sku,                                          // product-id: link to product
@@ -270,7 +271,8 @@ class SyncManager {
             variant.price,                                // price
             variant.inventory_quantity || 0,              // quantity
             '11',                                         // state: 11 = new
-            `"${this.cleanDescription(product.body_html)}"` // description
+            `"${this.cleanDescription(product.body_html)}"`, // description
+            category                                      // category code
           ].join(';');
           csvLines.push(line);
         }
@@ -477,7 +479,48 @@ class SyncManager {
     };
   }
 
-  extractMiraklOrderId(shopifyOrder) {
+  mapProductCategory(product) {
+    const title = (product.title || '').toLowerCase();
+    const productType = (product.product_type || '').toLowerCase();
+    
+    // Nut butters & spreads
+    if (title.includes('butter') || title.includes('tahini') || title.includes('spread')) {
+      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Dips & Spreads > Nut Butters';
+    }
+    
+    // Protein powders
+    if (title.includes('protein powder') || title.includes('protein')) {
+      return 'ROOT_MERCHANDISE > Health & Beauty > Health Care > Fitness & Nutrition > Vitamins & Supplements';
+    }
+    
+    // Oils
+    if (title.includes('oil') && (title.includes('olive') || title.includes('coconut') || title.includes('flax'))) {
+      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Cooking & Baking Ingredients > Cooking Oils';
+    }
+    
+    // Flour & baking
+    if (title.includes('flour') || title.includes('focaccia') || title.includes('sorghum')) {
+      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Cooking & Baking Ingredients > Flour';
+    }
+    
+    // Seeds & nuts
+    if (title.includes('seeds') || title.includes('chia') || title.includes('flax') || title.includes('sunflower')) {
+      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Nuts & Seeds';
+    }
+    
+    // Activated nuts (special category - you had these under Home & Garden > Seeds)
+    if (title.includes('activated')) {
+      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Nuts & Seeds';
+    }
+    
+    // Condiments & sauces (like Hemp*esan)
+    if (title.includes('sprinkle') || title.includes('sauce') || title.includes('hemp*esan') || title.includes('furikake')) {
+      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Condiments & Sauces';
+    }
+    
+    // Default fallback for any food items
+    return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items';
+  }
     // Try to extract from note first
     if (shopifyOrder.note) {
       const match = shopifyOrder.note.match(/Mirakl Order ID: ([^\s]+)/);
