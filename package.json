@@ -1,0 +1,17 @@
+{
+  "name": "shopify-mirakl-integration",
+  "version": "1.0.0",
+  "description": "Integration to sync products, inventory, orders, and tracking between Shopify and Mirakl marketplace",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "form-data": "^4.0.0",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
