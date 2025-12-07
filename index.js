@@ -134,12 +134,14 @@ class MiraklClient {
         filename: 'products.csv',
         contentType: 'text/csv'
       });
-      formData.append('shop', this.shopId);
-
+      
       const response = await axios.post(`${this.baseUrl}/api/products/imports`, formData, {
         headers: {
           'Authorization': this.headers.Authorization,
           ...formData.getHeaders()
+        },
+        params: {
+          shop: this.shopId
         }
       });
       return response.data;
@@ -161,6 +163,9 @@ class MiraklClient {
         headers: {
           'Authorization': this.headers.Authorization,
           ...formData.getHeaders()
+        },
+        params: {
+          import_mode: 'NORMAL'
         }
       });
       return response.data;
