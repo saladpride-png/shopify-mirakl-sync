@@ -1,8 +1,7 @@
 // ============================================
-// SHOPIFY-MIRAKL INTEGRATION APPLICATION
+// SHOPIFY-MIRAKL INTEGRATION (SIMPLIFIED)
 // ============================================
-// This app syncs products, inventory, orders, and tracking
-// between Shopify and Mirakl marketplace
+// ONLY: Orders (Mirakl → Shopify) + Inventory (Shopify → Mirakl)
 
 const axios = require('axios');
 const FormData = require('form-data');
@@ -10,9 +9,8 @@ const cron = require('node-cron');
 const fs = require('fs');
 
 // ============================================
-// CONFIGURATION - Uses Environment Variables
+// CONFIGURATION
 // ============================================
-// You can set these in Railway/Heroku or edit directly here
 const config = {
   shopify: {
     storeName: process.env.SHOPIFY_STORE_NAME || 'YOUR_STORE_NAME',
@@ -27,10 +25,8 @@ const config = {
   sync: {
     enabled: process.env.SYNC_ENABLED !== 'false',
     schedules: {
-      products: process.env.SCHEDULE_PRODUCTS || '0 */6 * * *',
-      inventory: process.env.SCHEDULE_INVENTORY || '*/30 * * * *',
-      orders: process.env.SCHEDULE_ORDERS || '*/15 * * * *',
-      tracking: process.env.SCHEDULE_TRACKING || '*/20 * * * *'
+      inventory: process.env.SCHEDULE_INVENTORY || '*/30 * * * *',  // Every 30 minutes
+      orders: process.env.SCHEDULE_ORDERS || '*/15 * * * *'         // Every 15 minutes
     }
   }
 };
@@ -84,34 +80,6 @@ class ShopifyClient {
       throw error;
     }
   }
-
-  async getFulfillments(orderId) {
-    try {
-      const response = await axios.get(`${this.baseUrl}/orders/${orderId}/fulfillments.json`, {
-        headers: this.headers
-      });
-      return response.data.fulfillments;
-    } catch (error) {
-      console.error('❌ Error fetching fulfillments:', error.response?.data || error.message);
-      throw error;
-    }
-  }
-
-  async getOrdersSince(sinceId = null) {
-    try {
-      const params = { status: 'any', limit: 250 };
-      if (sinceId) params.since_id = sinceId;
-      
-      const response = await axios.get(`${this.baseUrl}/orders.json`, {
-        headers: this.headers,
-        params
-      });
-      return response.data.orders;
-    } catch (error) {
-      console.error('❌ Error fetching orders:', error.response?.data || error.message);
-      throw error;
-    }
-  }
 }
 
 // ============================================
@@ -125,32 +93,6 @@ class MiraklClient {
       'Content-Type': 'application/json'
     };
     this.shopId = config.shopId;
-  }
-
-  async importProducts(csvContent) {
-    try {
-      const formData = new FormData();
-      formData.append('file', Buffer.from(csvContent), {
-        filename: 'offers.csv',
-        contentType: 'text/csv'
-      });
-      
-      // Use OFFERS API endpoint (not products)
-      const response = await axios.post(`${this.baseUrl}/api/offers/imports`, formData, {
-        headers: {
-          'Authorization': this.headers.Authorization,
-          ...formData.getHeaders()
-        },
-        params: {
-          shop: this.shopId,
-          import_mode: 'NORMAL'
-        }
-      });
-      return response.data;
-    } catch (error) {
-      console.error('❌ Error importing offers to Mirakl:', error.response?.data || error.message);
-      throw error;
-    }
   }
 
   async updateOffers(offersData) {
@@ -194,18 +136,6 @@ class MiraklClient {
       throw error;
     }
   }
-
-  async updateTracking(orderId, trackingInfo) {
-    try {
-      const response = await axios.put(`${this.baseUrl}/api/orders/${orderId}/tracking`, {
-        tracking: trackingInfo
-      }, { headers: this.headers });
-      return response.data;
-    } catch (error) {
-      console.error('❌ Error updating tracking in Mirakl:', error.response?.data || error.message);
-      throw error;
-    }
-  }
 }
 
 // ============================================
@@ -227,10 +157,8 @@ class SyncManager {
       console.error('⚠️  Error loading sync state:', error.message);
     }
     return {
-      lastProductSync: null,
       lastInventorySync: null,
       lastOrderSync: null,
-      lastTrackingSync: null,
       processedOrders: []
     };
   }
@@ -244,70 +172,23 @@ class SyncManager {
   }
 
   // ============================================
-  // PRODUCT/OFFER SYNC: Shopify → Mirakl
+  // INVENTORY SYNC: Shopify → Mirakl
+  // Creates FULL OFFERS with all required fields
   // ============================================
-  async syncProducts() {
-    console.log('\n🔄 Starting offer sync (Shopify → Mirakl)...');
+  async syncInventory() {
+    console.log('\n🔄 Starting inventory/offers sync (Shopify → Mirakl)...');
     try {
       const products = await this.shopify.getProducts();
-      console.log(`📦 Found ${products.length} products in Shopify`);
-
+      
       if (products.length === 0) {
         console.log('⚠️  No products to sync');
         return { success: true, count: 0 };
       }
 
-      // Convert Shopify products to Mirakl OFFER CSV format
-      const csvLines = ['sku;product-id;product-id-type;price;quantity;state;description;category'];
-      
-      for (const product of products) {
-        for (const variant of product.variants) {
-          const sku = variant.sku || `SHOPIFY-${variant.id}`;
-          const category = this.mapProductCategory(product);
-          const line = [
-            sku,                                          // sku: your offer SKU
-            sku,                                          // product-id: link to product
-            'SHOP_SKU',                                   // product-id-type
-            variant.price,                                // price
-            variant.inventory_quantity || 0,              // quantity
-            '11',                                         // state: 11 = new
-            `"${this.cleanDescription(product.body_html)}"`, // description
-            category                                      // category code
-          ].join(';');
-          csvLines.push(line);
-        }
-      }
-
-      const csvContent = csvLines.join('\n');
-      const result = await this.mirakl.importProducts(csvContent);
-      
-      console.log(`✅ Offers imported to Mirakl successfully!`);
-      console.log(`   Import ID: ${result.import_id}`);
-      this.syncState.lastProductSync = new Date().toISOString();
-      this.saveSyncState();
-      
-      return result;
-    } catch (error) {
-      console.error('❌ Offer sync failed:', error.message);
-      return { success: false, error: error.message };
-    }
-  }
-
-  // ============================================
-  // INVENTORY SYNC: Shopify → Mirakl
-  // ============================================
-  async syncInventory() {
-    console.log('\n🔄 Starting inventory sync (Shopify → Mirakl)...');
-    try {
-      const products = await this.shopify.getProducts();
+      // Get inventory item IDs
       const inventoryItemIds = products.flatMap(p => 
         p.variants.map(v => v.inventory_item_id)
       );
-
-      if (inventoryItemIds.length === 0) {
-        console.log('⚠️  No inventory items to sync');
-        return { success: true, count: 0 };
-      }
 
       const inventoryLevels = await this.shopify.getInventoryLevels(inventoryItemIds);
       console.log(`📊 Found ${inventoryLevels.length} inventory levels`);
@@ -315,24 +196,41 @@ class SyncManager {
       // Create inventory map
       const inventoryMap = {};
       inventoryLevels.forEach(level => {
-        inventoryMap[level.inventory_item_id] = level.available || 0;
+        inventoryMap[level.inventory_item_id] = Math.max(0, level.available || 0); // Ensure non-negative
       });
 
-      // Build CSV for Mirakl offers update
-      const csvLines = ['sku;quantity'];
+      // Build COMPLETE OFFER CSV (not just quantities!)
+      // This creates/updates offers with full data
+      const csvLines = ['sku;product-id;product-id-type;price;quantity;state;description;leadtime-to-ship'];
       
       for (const product of products) {
         for (const variant of product.variants) {
-          const quantity = inventoryMap[variant.inventory_item_id] || 0;
-          csvLines.push(`${variant.sku || variant.id};${quantity}`);
+          const sku = variant.sku || variant.barcode || `SHOPIFY-${variant.id}`;
+          const quantity = Math.max(0, inventoryMap[variant.inventory_item_id] || 0); // Ensure non-negative
+          const price = variant.price || '0.00';
+          const description = this.cleanDescription(product.body_html || product.title);
+          
+          const line = [
+            sku,                    // sku
+            sku,                    // product-id (same as sku)
+            'SHOP_SKU',             // product-id-type
+            price,                  // price
+            quantity,               // quantity (non-negative)
+            '11',                   // state (11 = new)
+            `"${description}"`,     // description
+            '2'                     // leadtime-to-ship (2 days)
+          ].join(';');
+          csvLines.push(line);
         }
       }
 
       const csvContent = csvLines.join('\n');
       const result = await this.mirakl.updateOffers(csvContent);
       
-      console.log(`✅ Inventory synced to Mirakl successfully!`);
+      console.log(`✅ Offers synced to Mirakl successfully!`);
       console.log(`   Import ID: ${result.import_id}`);
+      console.log(`   ${products.flatMap(p => p.variants).length} offers processed`);
+      
       this.syncState.lastInventorySync = new Date().toISOString();
       this.saveSyncState();
       
@@ -400,68 +298,11 @@ class SyncManager {
   }
 
   // ============================================
-  // TRACKING SYNC: Shopify → Mirakl
-  // ============================================
-  async syncTracking() {
-    console.log('\n🔄 Starting tracking sync (Shopify → Mirakl)...');
-    try {
-      // Get recent Shopify orders with Mirakl tag
-      const orders = await this.shopify.getOrdersSince();
-      const miraklOrders = orders.filter(o => 
-        o.tags && o.tags.includes('Mirakl') && o.fulfillment_status === 'fulfilled'
-      );
-
-      console.log(`📦 Found ${miraklOrders.length} fulfilled Mirakl orders`);
-
-      if (miraklOrders.length === 0) {
-        console.log('ℹ️  No fulfilled orders with tracking to sync');
-        return { success: true, updatedCount: 0 };
-      }
-
-      let updatedCount = 0;
-      for (const order of miraklOrders) {
-        // Extract Mirakl order ID from tags or notes
-        const miraklOrderId = this.extractMiraklOrderId(order);
-        if (!miraklOrderId) {
-          console.log(`⚠️  Could not extract Mirakl order ID from Shopify order ${order.order_number}`);
-          continue;
-        }
-
-        // Get fulfillments with tracking
-        const fulfillments = await this.shopify.getFulfillments(order.id);
-        
-        for (const fulfillment of fulfillments) {
-          if (fulfillment.tracking_number) {
-            await this.mirakl.updateTracking(miraklOrderId, {
-              carrier_code: fulfillment.tracking_company || 'OTHER',
-              tracking_number: fulfillment.tracking_number,
-              tracking_url: fulfillment.tracking_url
-            });
-            
-            console.log(`✅ Updated tracking for Mirakl order ${miraklOrderId}`);
-            console.log(`   Tracking: ${fulfillment.tracking_number}`);
-            updatedCount++;
-          }
-        }
-      }
-
-      this.syncState.lastTrackingSync = new Date().toISOString();
-      this.saveSyncState();
-      
-      console.log(`✅ Tracking sync complete. Updated ${updatedCount} orders.`);
-      return { success: true, updatedCount };
-    } catch (error) {
-      console.error('❌ Tracking sync failed:', error.message);
-      return { success: false, error: error.message };
-    }
-  }
-
-  // ============================================
   // HELPER METHODS
   // ============================================
   cleanDescription(html) {
-    if (!html) return '';
-    return html.replace(/<[^>]*>/g, '').replace(/"/g, '""').substring(0, 500);
+    if (!html) return 'Product description';
+    return html.replace(/<[^>]*>/g, '').replace(/"/g, '""').substring(0, 200);
   }
 
   convertAddress(address) {
@@ -478,63 +319,6 @@ class SyncManager {
       phone: address.phone
     };
   }
-
-  mapProductCategory(product) {
-    const title = (product.title || '').toLowerCase();
-    const productType = (product.product_type || '').toLowerCase();
-    
-    // Nut butters & spreads
-    if (title.includes('butter') || title.includes('tahini') || title.includes('spread')) {
-      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Dips & Spreads > Nut Butters';
-    }
-    
-    // Protein powders
-    if (title.includes('protein powder') || title.includes('protein')) {
-      return 'ROOT_MERCHANDISE > Health & Beauty > Health Care > Fitness & Nutrition > Vitamins & Supplements';
-    }
-    
-    // Oils
-    if (title.includes('oil') && (title.includes('olive') || title.includes('coconut') || title.includes('flax'))) {
-      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Cooking & Baking Ingredients > Cooking Oils';
-    }
-    
-    // Flour & baking
-    if (title.includes('flour') || title.includes('focaccia') || title.includes('sorghum')) {
-      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Cooking & Baking Ingredients > Flour';
-    }
-    
-    // Seeds & nuts
-    if (title.includes('seeds') || title.includes('chia') || title.includes('flax') || title.includes('sunflower')) {
-      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Nuts & Seeds';
-    }
-    
-    // Activated nuts (special category - you had these under Home & Garden > Seeds)
-    if (title.includes('activated')) {
-      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Nuts & Seeds';
-    }
-    
-    // Condiments & sauces (like Hemp*esan)
-    if (title.includes('sprinkle') || title.includes('sauce') || title.includes('hemp*esan') || title.includes('furikake')) {
-      return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items > Condiments & Sauces';
-    }
-    
-    // Default fallback for any food items
-    return 'ROOT_MERCHANDISE > Food, Beverages & Tobacco > Food Items';
-  }
-    // Try to extract from note first
-    if (shopifyOrder.note) {
-      const match = shopifyOrder.note.match(/Mirakl Order ID: ([^\s]+)/);
-      if (match) return match[1];
-    }
-    
-    // Try to extract from tags
-    if (shopifyOrder.tags) {
-      const match = shopifyOrder.tags.match(/Order-([^\s,]+)/);
-      if (match) return match[1];
-    }
-    
-    return null;
-  }
 }
 
 // ============================================
@@ -543,7 +327,7 @@ class SyncManager {
 async function main() {
   console.log('\n');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 SHOPIFY-MIRAKL INTEGRATION');
+  console.log('🚀 SHOPIFY-MIRAKL INTEGRATION (SIMPLIFIED)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`📅 Started at: ${new Date().toLocaleString()}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -555,18 +339,7 @@ async function main() {
       config.mirakl.apiKey.includes('YOUR')) {
     console.error('❌ CONFIGURATION ERROR!');
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.error('Please set your API credentials:');
-    console.error('');
-    console.error('Option 1 - Environment Variables (Railway/Heroku):');
-    console.error('  Set these in your hosting dashboard:');
-    console.error('  - SHOPIFY_STORE_NAME');
-    console.error('  - SHOPIFY_ACCESS_TOKEN');
-    console.error('  - MIRAKL_API_URL');
-    console.error('  - MIRAKL_API_KEY');
-    console.error('  - MIRAKL_SHOP_ID');
-    console.error('');
-    console.error('Option 2 - Direct in Code:');
-    console.error('  Edit the config section in index.js');
+    console.error('Please set your API credentials in environment variables!');
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     process.exit(1);
   }
@@ -584,32 +357,22 @@ async function main() {
   // Schedule automated syncs
   if (config.sync.enabled) {
     console.log('⏰ Scheduling automated syncs...');
-    console.log(`   Products:  ${config.sync.schedules.products}`);
-    console.log(`   Inventory: ${config.sync.schedules.inventory}`);
-    console.log(`   Orders:    ${config.sync.schedules.orders}`);
-    console.log(`   Tracking:  ${config.sync.schedules.tracking}`);
+    console.log(`   Inventory: ${config.sync.schedules.inventory} (Shopify → Mirakl)`);
+    console.log(`   Orders:    ${config.sync.schedules.orders} (Mirakl → Shopify)`);
     
-    cron.schedule(config.sync.schedules.products, async () => {
-      console.log('\n[SCHEDULED] Product sync triggered');
-      await syncManager.syncProducts();
-    });
-
+    // Inventory sync (every 30 minutes)
     cron.schedule(config.sync.schedules.inventory, async () => {
       console.log('\n[SCHEDULED] Inventory sync triggered');
       await syncManager.syncInventory();
     });
 
+    // Orders sync (every 15 minutes)
     cron.schedule(config.sync.schedules.orders, async () => {
       console.log('\n[SCHEDULED] Order sync triggered');
       await syncManager.syncOrders();
     });
 
-    cron.schedule(config.sync.schedules.tracking, async () => {
-      console.log('\n[SCHEDULED] Tracking sync triggered');
-      await syncManager.syncTracking();
-    });
-
-    console.log('✅ All scheduled tasks configured\n');
+    console.log('✅ Scheduled tasks configured\n');
   }
 
   // Run initial sync
@@ -618,16 +381,16 @@ async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   
   try {
-    await syncManager.syncProducts();
     await syncManager.syncInventory();
     await syncManager.syncOrders();
-    await syncManager.syncTracking();
     
     console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('✅ INITIAL SYNC COMPLETE!');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('🎉 Integration is now running!');
-    console.log('💡 Syncs will run automatically on schedule');
+    console.log('💡 Syncs:');
+    console.log('   • Inventory updates every 30 minutes');
+    console.log('   • Orders imported every 15 minutes');
     console.log('🛑 Press Ctrl+C to stop');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   } catch (error) {
